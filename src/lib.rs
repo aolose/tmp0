@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::option::Option;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::{read_dir, read_to_string};
 use toml;
@@ -17,15 +17,16 @@ lazy_static! {
 }
 
 #[derive(Deserialize)]
-pub struct Cfg {
-    pub assets: String,
-    pub version: String,
-    pub tooltips: String,
-    pub unpack_dir: String,
-    pub english: String,
-    pub spells: Vec<[String; 2]>,
-    pub icons: Vec<String>,
-    pub dds: Vec<String>,
+struct Cfg {
+    assets: String,
+    version: String,
+    tooltips: String,
+    unpack_dir: String,
+    english: String,
+    spells: Vec<String>,
+    flags: Vec<String>,
+    icons: Vec<String>,
+    dds: Vec<String>,
 }
 
 fn load_cfg() -> Cfg {
@@ -36,7 +37,7 @@ fn load_cfg() -> Cfg {
     }
 }
 
-pub fn tokenizer(str: &str) -> Vec<&str> {
+fn tokenizer(str: &str) -> Vec<&str> {
     let mut results = vec![];
     let re = &Regex::new(r"([^a-zA-Z0-9\-]+)|([a-zA-Z0-9\-]+)").unwrap();
     for c in re.find_iter(str) {
@@ -45,7 +46,7 @@ pub fn tokenizer(str: &str) -> Vec<&str> {
     results
 }
 
-pub fn hash(str: &str) -> String {
+fn hash(str: &str) -> String {
     let mut a: u32 = 0;
     let mut result = vec![];
     for chr in str.bytes() {
@@ -61,28 +62,26 @@ pub fn hash(str: &str) -> String {
     result.into_iter().rev().collect()
 }
 
-pub struct Stats {
+struct Stats {
     id: String,
     stats_type: String,
-    flag: String,
+    weight: u8,
     data: Box<HashMap<String, String>>,
-    pub proto: Option<Box<Stats>>,
 }
 
 impl Stats {
-    pub fn new() -> Stats {
+    fn new() -> Stats {
         Stats {
             id: String::new(),
             stats_type: String::new(),
-            flag: String::new(),
+            weight: 0,
             data: Box::new(HashMap::new()),
-            proto: None,
         }
     }
 }
 
 
-pub fn n2s(n: usize) -> String {
+fn n2s(n: usize) -> String {
     let mut a = n;
     let base: [u8; 152] = [3, 4, 5, 6, 7, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 127,
         128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148,
@@ -112,53 +111,171 @@ pub fn n2s(n: usize) -> String {
     String::from_utf8(v).expect("parse error")
 }
 
+fn get_spell_proto(cur: usize, list: &Vec<Stats>) -> usize {
+    let spell = &list[cur];
+    if let Some(id) = spell.data.get("Using") {
+        let len = list.len();
+        let mut last = 0;
+        let max = if spell.id == id.to_string() {
+            spell.weight - 1
+        } else {
+            spell.weight - 0
+        };
+        for x in cur + 1..len {
+            let s = &list[x];
+            if s.id == *id {
+                if s.weight > max {
+                    continue;
+                } else if s.weight == max {
+                    last = x;
+                    break;
+                }
+                if last != cur {
+                    if list[last].weight > s.weight {
+                        continue;
+                    }
+                }
+                last = x;
+            }
+        }
+        last
+    } else {
+        cur
+    }
+}
 
-// pub fn parse_data() {
-//     // let cfg = load_cfg("./cfg.toml");
-//     // let mut spells: Vec<&str> = vec![];
-//     let mut spell_keys: Vec<String> = vec![];
-//     // let mut used_icons: Vec<&str> = vec![];
-//     // let task: Vec<(String, String)> = vec![];
-//
-//     let mini_spell = |spells: Vec<&Spell>| -> String {
-//         let mut b = vec![];
-//         for n in spells {
-//             let mut x = String::new();
-//             let m = n.values
-//                 .iter()
-//                 .map(|vv| vv.join("\x02"))
-//                 .collect::<Vec<String>>().join("\x00");
-//             for k in &n.keys {
-//                 let mut i = spell_keys.len();
-//                 if let Some(key) = spell_keys.iter().position(|r| r == k) {
-//                     i = key
-//                 } else {
-//                     spell_keys.push(format!("{}", k));
-//                 };
-//                 x += &*n2s(i);
-//             }
-//             b.push(format!("{}\x00{}", x, m))
-//         }
-//         format!("\"{}\"", b.join("\x00").replace('"', "\\\""))
-//     };
-// }
+
+fn parse_data() {
+    let mut rs = load_spell();
+    let mut spells = rs.0;
+    let spell_types = rs.1;
+    let spell_names: HashSet<String> = HashSet::new();
+    let mut spells_map: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut i = 0;
+    let len = spells.len() - 1;
+    for a in i..len {
+        let key = (&spells[i].id).to_string();
+        if let Some(mut u) = spells_map.get_mut(&key) {
+            u.push(a)
+        } else {
+            spells_map.insert(key, vec![a]);
+        }
+    }
+
+    for (_, mut v) in spells_map.iter_mut() {
+        v.sort_by(|a, b| {
+            spells[*a].weight.cmp(&spells[*b].weight)
+        })
+    };
+
+
+    let get = |key: String, attr: &str| -> (Option<String>, Option<String>) {
+        for a in spells_map.get(&key).unwrap() {
+            let data = &spells[*a].data;
+            if let Some(&ref v) = data.get(&attr.to_string()) {
+                return (Some(v.to_string()), None);
+            } else {
+                if let Some(&ref v) = data.get("Using") {
+                    return (None, Some(v.to_string()));
+                }
+            }
+        }
+        (None, None)
+    };
+
+    let get_attr = |key: String, attr: &str| -> Option<String>{
+        let mut key = key;
+        loop {
+            let (r, k) = get(key, attr);
+            if let Some(rv) = r {
+                return Some(rv);
+            } else if let Some(p) = k {
+                key = p;
+            } else {
+                break
+            }
+        }
+        None
+    };
+
+    let mut spell_ids = spells_map.keys().map(|a| a).collect::<Vec<&String>>();
+    spell_ids.sort_by(|&a, &b| {
+        let nm = |a: &String| {
+            let s = &spells[spells_map.get(a).unwrap()[0]];
+            let id = &s.id;
+            if "InterruptData" != &s.stats_type {
+                replace_str(id, "^[a-zA-Z]", "").to_string()
+            } else {
+                id.to_string()
+            }
+        };
+        let lv = |a| {
+            if let Some(lv) = get_attr(a, "Level") {
+                let i: u8 = lv.parse().unwrap();
+                if i == 0 {
+                    98
+                } else {
+                    i
+                }
+            } else {
+                99
+            }
+        };
+        let la: u8 = lv(a.to_string());
+        let lb: u8 = lv(b.to_string());
+        if la != lb {
+            la.cmp(&lb)
+        } else {
+            nm(&a).cmp(&nm(&b))
+        }
+    });
+
+    let mut hide = vec![];
+    let mut show = vec![];
+
+
+
+    // let mini_spell = |spells: Vec<&Spell>| -> String {
+    //     let mut b = vec![];
+    //     for n in spells {
+    //         let mut x = String::new();
+    //         let m = n.values
+    //             .iter()
+    //             .map(|vv| vv.join("\x02"))
+    //             .collect::<Vec<String>>().join("\x00");
+    //         for k in &n.keys {
+    //             let mut i = spell_keys.len();
+    //             if let Some(key) = spell_keys.iter().position(|r| r == k) {
+    //                 i = key
+    //             } else {
+    //                 spell_keys.push(format!("{}", k));
+    //             };
+    //             x += &*n2s(i);
+    //         }
+    //         b.push(format!("{}\x00{}", x, m))
+    //     }
+    //     format!("\"{}\"", b.join("\x00").replace('"', "\\\""))
+    // };
+}
+
+
 #[derive(Deserialize)]
-pub struct ContentList {
-    pub content: Vec<Lang>,
+struct ContentList {
+    content: Vec<Lang>,
 }
 
 #[derive(Deserialize)]
-pub struct Lang {
+struct Lang {
     #[serde(rename = "@contentuid")]
-    pub contentuid: String,
+    contentuid: String,
     #[serde(rename = "$text")]
-    pub value: String,
+    value: String,
 }
 #[derive(Deserialize)]
-pub struct IconNodeList(Vec<crate::IconAttr>);
+struct IconNodeList(Vec<crate::IconAttr>);
 
 #[derive(Deserialize)]
-pub struct IconAttr {
+struct IconAttr {
     #[serde(rename = "@id")]
     id: String,
     #[serde(rename = "@value")]
@@ -166,33 +283,33 @@ pub struct IconAttr {
 }
 
 #[derive(Deserialize)]
-pub struct NodeList(Vec<Node>);
+struct NodeList(Vec<Node>);
 
 #[derive(Deserialize)]
-pub struct Node {
-    pub attribute: Vec<Attribute>,
+struct Node {
+    attribute: Vec<Attribute>,
 }
 #[derive(Deserialize)]
-pub struct Attribute {
+struct Attribute {
     #[serde(rename = "@id")]
-    pub id: String,
+    id: String,
     #[serde(rename = "@value")]
-    pub value: Option<String>,
+    value: Option<String>,
     #[serde(rename = "@handle")]
-    pub handle: Option<String>,
+    handle: Option<String>,
 }
 
-pub fn split_str<'a>(str: &'a str, regex: &str) -> Vec<&'a str> {
+fn split_str<'a>(str: &'a str, regex: &str) -> Vec<&'a str> {
     let re = Regex::new(regex).unwrap();
     re.split(str).into_iter().collect::<Vec<&str>>()
 }
 
-pub fn replace_str<'a>(str: &'a str, regex: &str, replace: &str) -> Cow<'a, str> {
+fn replace_str<'a>(str: &'a str, regex: &str, replace: &str) -> Cow<'a, str> {
     let re = Regex::new(regex).unwrap();
     re.replace(str, replace)
 }
 
-pub fn match_str<'a>(txt: &'a str, regex: &str) -> Option<Vec<&'a str>> {
+fn match_str<'a>(txt: &'a str, regex: &str) -> Option<Vec<&'a str>> {
     let re = Regex::new(regex).unwrap();
     let mut v = vec![];
     for cap in re.captures_iter(txt) {
@@ -216,12 +333,12 @@ fn parse_spell(
     list: &mut Vec<Stats>,
     slices: Vec<&str>,
     start: usize,
-    flag: String,
+    weight: u8,
 ) {
     if start == slices.len() { return; };
     let mut i = 0;
     let mut spell = Stats::new();
-    spell.flag = flag.clone();
+    spell.weight = weight;
     for n in slices[start..].iter() {
         if n.starts_with("new entry") {
             if i == 0 {
@@ -280,7 +397,7 @@ fn parse_spell(
         }
     }
     list.push(spell);
-    parse_spell(spell_types, list, slices, start + i, flag);
+    parse_spell(spell_types, list, slices, start + i, weight);
 }
 
 fn str_u8(str: String) -> u8 {
@@ -288,7 +405,7 @@ fn str_u8(str: String) -> u8 {
     (f * 32f32) as u8
 }
 
-pub fn load_icons() -> HashMap<String, [u8; 3]> {
+fn load_icons() -> HashMap<String, [u8; 3]> {
     let mut icons_map: HashMap<String, [u8; 3]> = HashMap::new();
     let mut x = 0u8;
     for f in &CFG.icons {
@@ -315,12 +432,11 @@ pub fn load_icons() -> HashMap<String, [u8; 3]> {
     icons_map
 }
 
-
-pub fn load_spell() {
+fn load_spell() -> (Vec<Stats>, Vec<String>) {
     let mut list: Vec<Stats> = vec![];
     let mut spell_types: Vec<String> = vec![];
-    let mut spell_files = vec![];
-    for [a, flag] in &CFG.spells {
+    let mut i = 0u8;
+    for a in &CFG.spells {
         for entry in read_dir(format!("{}/{}", &CFG.unpack_dir, a)).unwrap() {
             let entry = entry.unwrap();
             let path = entry.path();
@@ -328,21 +444,20 @@ pub fn load_spell() {
             if let Some(n) = name {
                 if let Some(n) = n.to_str() {
                     if n.starts_with("Spell_") || n.starts_with("Passive") {
-                        spell_files.push((path, flag.clone()));
+                        let file = fs::read_to_string(path).unwrap();
+                        parse_spell(&mut spell_types, &mut list, split_str(&file, "\r?\n"), 0, i);
                     }
                 }
             }
         };
+        i = i + 1;
     }
-    for (path, flag) in spell_files {
-        let file = fs::read_to_string(path).unwrap();
-        parse_spell(&mut spell_types, &mut list, split_str(&file, "\r?\n"), 0, flag);
-    }
+    (list, spell_types)
 }
 
-pub fn load_lang() -> HashMap<String, String> {
+fn load_lang() -> HashMap<String, String> {
     let mut lang_map: HashMap<String, String> = HashMap::new();
-    let xml = read_to_string(format!("{}/{}", CFG.unpack_dir, CFG.english)).expect("open file error");
+    let xml = read_to_string(format!("{}/{}", &CFG.unpack_dir, &CFG.english)).expect("open file error");
     let a: ContentList = de::from_str(&*xml).expect("de error");
     a.content.iter().for_each(|a| {
         let Lang { contentuid: k, value: v } = a;
@@ -354,7 +469,7 @@ pub fn load_lang() -> HashMap<String, String> {
     lang_map
 }
 
-pub fn load_tooltips() -> HashMap<String, [String; 2]> {
+fn load_tooltips() -> HashMap<String, [String; 2]> {
     let mut tooltips_map: HashMap<String, [String; 2]> = HashMap::new();
     let xml = read_to_string(format!("{}/{}", CFG.unpack_dir, CFG.tooltips))
         .expect("open file error");

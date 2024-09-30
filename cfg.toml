@@ -2,14 +2,15 @@ assets = "public"
 version = "Patch 7"
 unpack_dir = "D:/Program Files (x86)/GOG Galaxy/Games/bg3mmd/UnpackedData"
 english = "English/Localization/English/english.loca.xml"
-tooltips= "Shared/Public/Shared/TooltipExtras/TooltipUpcastDescriptions.lsx"
+tooltips = "Shared/Public/Shared/TooltipExtras/TooltipUpcastDescriptions.lsx"
 spells = [
-    ["Shared/Public/Shared/Stats/Generated/Data", "Shared"],
-    ["Gustav/Public/Gustav/Stats/Generated/Data", "Gustav"],
-    ["Shared/Public/SharedDev/Stats/Generated/Data", "SharedDev"],
-    ["Gustav/Public/GustavDev/Stats/Generated/Data", "GustavDev"],
-    ["Gustav/Public/Honour/Stats/Generated/Data", "Honour"]
+    "Shared/Public/Shared/Stats/Generated/Data",
+    "Gustav/Public/Gustav/Stats/Generated/Data",
+    "Shared/Public/SharedDev/Stats/Generated/Data",
+    "Gustav/Public/GustavDev/Stats/Generated/Data",
+    "Gustav/Public/Honour/Stats/Generated/Data",
 ]
+flags = ["Shared", "Gustav", "SharedDev", "GustavDev", "Honour"]
 icons = [
     "Shared/Public/Shared/GUI/Icons_Skills.lsx",
     "Shared/Public/SharedDev/GUI/Icons_Skills.lsx",
