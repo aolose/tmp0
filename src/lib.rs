@@ -3,11 +3,13 @@ use std::option::Option;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::{read_dir, read_to_string};
+use std::ops::Deref;
 use toml;
 use serde::Deserialize;
 use regex::Regex;
 use quick_xml::de;
 use lazy_static::lazy_static;
+
 const CFG_FILE: &str = "./cfg.toml";
 
 lazy_static! {
@@ -69,6 +71,14 @@ struct Stats {
     data: Box<HashMap<String, String>>,
 }
 
+pub struct ParseResult {
+    spells: Vec<String>,
+    keys: String,
+    types: String,
+    icons: String,
+    dic: String,
+}
+
 impl Stats {
     fn new() -> Stats {
         Stats {
@@ -79,7 +89,6 @@ impl Stats {
         }
     }
 }
-
 
 fn n2s(n: usize) -> String {
     let mut a = n;
@@ -144,12 +153,17 @@ fn get_spell_proto(cur: usize, list: &Vec<Stats>) -> usize {
     }
 }
 
-
-fn parse_data() {
+pub fn parse_data() -> ParseResult {
     let mut rs = load_spell();
-    let mut spells = rs.0;
-    let spell_types = rs.1;
-    let spell_names: HashSet<String> = HashSet::new();
+    let mut pr = ParseResult {
+        spells: vec![],
+        keys: "".to_string(),
+        types: "".to_string(),
+        icons: "".to_string(),
+        dic: "".to_string(),
+    };
+    let spells = rs.0;
+    pr.types = rs.1.join(",");
     let mut spells_map: HashMap<String, Vec<usize>> = HashMap::new();
     let mut i = 0;
     let len = spells.len() - 1;
@@ -169,7 +183,7 @@ fn parse_data() {
     };
 
 
-    let get = |key: String, attr: &str| -> (Option<String>, Option<String>) {
+    let get_current_attr = |key: String, attr: &str| -> (Option<String>, Option<String>) {
         for a in spells_map.get(&key).unwrap() {
             let data = &spells[*a].data;
             if let Some(&ref v) = data.get(&attr.to_string()) {
@@ -186,7 +200,7 @@ fn parse_data() {
     let get_attr = |key: String, attr: &str| -> Option<String>{
         let mut key = key;
         loop {
-            let (r, k) = get(key, attr);
+            let (r, k) = get_current_attr(key, attr);
             if let Some(rv) = r {
                 return Some(rv);
             } else if let Some(p) = k {
@@ -229,13 +243,101 @@ fn parse_data() {
             nm(&a).cmp(&nm(&b))
         }
     });
-
+    let mut idx_map = HashMap::new();
+    for i in 0..spell_ids.len() {
+        idx_map.insert(spell_ids[i], i);
+    }
     let mut hide = vec![];
     let mut show = vec![];
 
+    let mut push = |ns: &Vec<usize>, i| {
+        let f = ns[i];
+        let len = ns.len();
+        let spell: &Stats = &spells[f];
+        if let Some(us) = get_attr(spell.id.to_string(), "Using") {
+            if spell.id == us {
+                if i + 1 < len {
+                    if i == 0 {
+                        show.push((f, ns[i + 1]));
+                    } else {
+                        hide.push((f, ns[i + 1]));
+                    }
+                } else {
+                    if i == 0 {
+                        show.push((f, f));
+                    } else {
+                        hide.push((f, f));
+                    }
+                }
+            } else {
+                let n = spells_map.get(&us).unwrap()[0];
+                if i == 0 {
+                    show.push((f, n));
+                } else {
+                    hide.push((f, n));
+                }
+            }
+        } else {
+            if i == 0 {
+                show.push((f, f));
+            } else {
+                hide.push((f, f));
+            }
+        }
+    };
+
+    for s in spell_ids {
+        let ns = &spells_map.get(s).unwrap();
+        for i in 0..ns.len() {
+            push(ns, i)
+        }
+    }
 
 
-    // let mini_spell = |spells: Vec<&Spell>| -> String {
+    let mut keys = vec![];
+    let mut idx_key = |k: String| -> String {
+        for i in 0..keys.len() {
+            if keys[i] == k {
+                return n2s(i);
+            }
+        }
+        keys.push(k);
+        n2s(keys.len() - 1)
+    };
+
+    let mut add_spell_str_to_rss = |n: usize| {
+        let is_show = n < show.len();
+        let idx = if is_show { n } else { n - show.len() };
+        let vc = if is_show { &show } else { &hide };
+        let (p, c) = vc[idx];
+        let spell = &spells[p];
+        let mut mp: HashMap<String, String> = spell.data.deref().clone();
+        let us = String::from("Using");
+        if p == c {
+            if let Some(_) = get_attr(spell.id.to_string(), "Using") {
+                mp.insert(us, p.to_string());
+            }
+        } else {
+            mp.insert(us, c.to_string());
+        }
+        if !is_show {
+            mp.insert("i".to_string(), idx_map.get(&spell.id).unwrap().to_string());
+        }
+        let ix = *&spell.weight as usize;
+        let a = CFG.flags[ix].to_string();
+        mp.insert("mod".to_string(), a);
+        let _ = &pr.spells.push(mp.clone().into_keys().fold(String::new(), |a, b| a + idx_key(b).as_str())
+            + mp.into_values().fold(String::new(), |a, b| a + "\x00" + b.as_str()).as_str());
+    };
+
+    for i in 0..spells.len() {
+        add_spell_str_to_rss(i)
+    }
+
+    println!("{}", pr.spells[0]);
+
+    pr
+    // let mini_spell = |spells: Vec<&Stats>| -> String {
     //     let mut b = vec![];
     //     for n in spells {
     //         let mut x = String::new();
@@ -457,7 +559,8 @@ fn load_spell() -> (Vec<Stats>, Vec<String>) {
 
 fn load_lang() -> HashMap<String, String> {
     let mut lang_map: HashMap<String, String> = HashMap::new();
-    let xml = read_to_string(format!("{}/{}", &CFG.unpack_dir, &CFG.english)).expect("open file error");
+    let pt = format!("{}/{}", &CFG.unpack_dir, &CFG.english);
+    let xml = read_to_string(pt.clone()).expect(&format!("open failed:{}", pt));
     let a: ContentList = de::from_str(&*xml).expect("de error");
     a.content.iter().for_each(|a| {
         let Lang { contentuid: k, value: v } = a;

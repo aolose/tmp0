@@ -1,7 +1,5 @@
-use learn0::match_str;
+use learn0::parse_data;
 
 fn main() {
-    let txt = r#"data "stest" "value""#;
-    let matches = match_str(&txt,r#""([^"]+)" "([^"]+)""#);
-    println!("{:?}", matches);
+    parse_data();
 }
