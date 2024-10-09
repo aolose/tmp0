@@ -1,9 +1,10 @@
 use std::borrow::Cow;
 use std::option::Option;
-use std::collections::{HashMap, HashSet};
-use std::fs;
+use std::collections::{HashMap};
+use std::{thread};
 use std::fs::{read_dir, read_to_string};
 use std::ops::Deref;
+use std::path::PathBuf;
 use toml;
 use serde::Deserialize;
 use regex::Regex;
@@ -63,7 +64,7 @@ fn hash(str: &str) -> String {
     }
     result.into_iter().rev().collect()
 }
-
+#[derive(Clone)]
 struct Stats {
     id: String,
     stats_type: String,
@@ -101,8 +102,8 @@ fn n2s(n: usize) -> String {
         233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253,
         254, 255];
 
-    let ba = 111;
-    let bb = 38;
+    let ba = 115;
+    let bb = 33;
     let base_str = &base[..ba];
     let t_str = &base[ba..ba + bb];
     let h_str = &base[ba + bb..];
@@ -116,8 +117,7 @@ fn n2s(n: usize) -> String {
         a = a / bb;
         ru.push(h_str[a]);
     }
-    let v = ru.into_iter().rev().collect::<Vec<u8>>();
-    String::from_utf8(v).expect("parse error")
+    ru.iter().map(|&c| c as char).collect::<String>()
 }
 
 fn get_spell_proto(cur: usize, list: &Vec<Stats>) -> usize {
@@ -154,7 +154,7 @@ fn get_spell_proto(cur: usize, list: &Vec<Stats>) -> usize {
 }
 
 pub fn parse_data() -> ParseResult {
-    let mut rs = load_spell();
+    let rs = load_spell();
     let mut pr = ParseResult {
         spells: vec![],
         keys: "".to_string(),
@@ -165,38 +165,40 @@ pub fn parse_data() -> ParseResult {
     let spells = rs.0;
     pr.types = rs.1.join(",");
     let mut spells_map: HashMap<String, Vec<usize>> = HashMap::new();
-    let mut i = 0;
     let len = spells.len() - 1;
-    for a in i..len {
-        let key = (&spells[i].id).to_string();
-        if let Some(mut u) = spells_map.get_mut(&key) {
+
+    for a in 0..len {
+        let key = (&spells[a].id).to_string();
+        if let Some(u) = spells_map.get_mut(&key) {
             u.push(a)
         } else {
             spells_map.insert(key, vec![a]);
         }
     }
 
-    for (_, mut v) in spells_map.iter_mut() {
+    for (_, v) in spells_map.iter_mut() {
         v.sort_by(|a, b| {
             spells[*a].weight.cmp(&spells[*b].weight)
         })
     };
 
-
     let get_current_attr = |key: String, attr: &str| -> (Option<String>, Option<String>) {
-        for a in spells_map.get(&key).unwrap() {
+        let sp = spells_map.get(&key).unwrap();
+        let mut p = None;
+        for a in sp {
             let data = &spells[*a].data;
             if let Some(&ref v) = data.get(&attr.to_string()) {
                 return (Some(v.to_string()), None);
-            } else {
+            } else if p == None {
                 if let Some(&ref v) = data.get("Using") {
-                    return (None, Some(v.to_string()));
+                    if *v != key {
+                        p = Some(v.to_string());
+                    }
                 }
             }
         }
-        (None, None)
+        (None, p)
     };
-
     let get_attr = |key: String, attr: &str| -> Option<String>{
         let mut key = key;
         loop {
@@ -211,7 +213,6 @@ pub fn parse_data() -> ParseResult {
         }
         None
     };
-
     let mut spell_ids = spells_map.keys().map(|a| a).collect::<Vec<&String>>();
     spell_ids.sort_by(|&a, &b| {
         let nm = |a: &String| {
@@ -330,7 +331,7 @@ pub fn parse_data() -> ParseResult {
             + mp.into_values().fold(String::new(), |a, b| a + "\x00" + b.as_str()).as_str());
     };
 
-    for i in 0..spells.len() {
+    for i in 0..spells.len() - 1 {
         add_spell_str_to_rss(i)
     }
 
@@ -431,75 +432,67 @@ fn match_str<'a>(txt: &'a str, regex: &str) -> Option<Vec<&'a str>> {
 }
 
 fn parse_spell(
-    spell_types: &mut Vec<String>,
-    list: &mut Vec<Stats>,
-    slices: Vec<&str>,
-    start: usize,
+    path: PathBuf,
     weight: u8,
-) {
-    if start == slices.len() { return; };
-    let mut i = 0;
+) -> Vec<Stats> {
+    let mut list = vec![];
     let mut spell = Stats::new();
     spell.weight = weight;
-    for n in slices[start..].iter() {
-        if n.starts_with("new entry") {
-            if i == 0 {
-                i = i + 1;
-                spell.id = n.replace("new entry ", "");
-                continue;
-            } else {
-                break;
+    let mut x = 0;
+    for line in read_to_string(path.clone()).unwrap().lines() {
+        let from = |n| { String::from(&line[n..line.len() - 1]) };
+        if line.starts_with("new") {
+            if spell.id.len() != 0 {
+                list.push(spell);
             }
-        }
-        i = i + 1;
-        if n.starts_with("using") {
-            let val = n[6..].replace("\"", "");
+            spell = Stats::new();
+            spell.id = from(11);
+        } else if line.starts_with("using") {
+            let val = from(7);
             spell.data.insert("Using".to_string(), val);
-        } else if n.starts_with("type ") {
-            spell.stats_type = n[6..n.len() - 1].to_string()
-        } else if n.starts_with("data ") {
-            if let Some(v) = match_str(n, r#""([^"]+)" "([^"]+)""#) {
-                if v.len() != 2 {
-                    continue;
-                }
-                let key = v[0];
-                let value = v[1];
-                let c = replace_str(
-                    value,
-                    r"([a-zA-Z]+\([0-9',.+\-a-zA-Z \/\\()_]*\))",
-                    "<b>$1</b>",
-                );
-                if key == "TooltipUpcastDescription" {
-                    let text;
-                    let hash = c.to_string();
-                    if let Some([name, val]) = &TOOLTIP_MAP.get(&hash) {
-                        text = format!("{}<br>{}", name, val);
-                    } else { text = hash }
-                    spell.data.insert(key.to_string(), text);
-                } else if ["DisplayName", "Description", "ExtraDescription"].contains(&key) {
-                    let d = replace_str(&*c, r";\d+$", "");
-                    spell.data.insert(
-                        key.to_string(),
-                        if let Some(v) = &LANG_EN.get(&d.to_string()) {
-                            v.to_string()
-                        } else {
-                            d.to_string()
-                        },
+        } else if line.starts_with("type") {
+            spell.stats_type = from(6);
+        } else if line.starts_with("data") {
+            if let Some(v) = match_str(line, r#""([^"]+)" "([^"]+)""#) {
+                if v.len() == 2 {
+                    let key = v[0];
+                    let value = v[1];
+                    let c = replace_str(
+                        value,
+                        r"([a-zA-Z]+\([0-9',.+\-a-zA-Z \/\\()_]*\))",
+                        "<b>$1</b>",
                     );
-                } else {
-                    let d = if c == "unknown" { "".to_string() } else { c.replace(";", "\x02") };
-                    spell.data.insert(key.to_string(), d);
+                    if key == "TooltipUpcastDescription" {
+                        let text;
+                        let hash = c.to_string();
+                        if let Some([name, val]) = &TOOLTIP_MAP.get(&hash) {
+                            text = format!("{}<br>{}", name, val);
+                        } else { text = hash }
+                        spell.data.insert(key.to_string(), text);
+                    } else if ["DisplayName", "Description", "ExtraDescription"].contains(&key) {
+                        let d = replace_str(&*c, r";\d+$", "");
+                        spell.data.insert(
+                            key.to_string(),
+                            if let Some(v) = &LANG_EN.get(&d.to_string()) {
+                                v.to_string()
+                            } else {
+                                d.to_string()
+                            },
+                        );
+                    } else {
+                        let d = if c == "unknown" { "".to_string() } else { c.replace(";", "\x02") };
+                        spell.data.insert(key.to_string(), d);
+                    }
                 }
             }
         }
+        x = x + 1;
     }
-    if let Some(spell_type) = spell.data.get("SpellType") {
-        if spell_types.contains(&spell_type) {
-            spell_types.push(spell_type.to_string());
-        }
+    if spell.id.len() != 0 {
+        list.push(spell);
     }
-    list.push(spell);
-    parse_spell(spell_types, list, slices, start + i, weight);
+    println!("{:?} parsed {} spells", path.file_name().unwrap(), list.len());
+    list
 }
 
 fn str_u8(str: String) -> u8 {
@@ -538,6 +531,7 @@ fn load_spell() -> (Vec<Stats>, Vec<String>) {
     let mut list: Vec<Stats> = vec![];
     let mut spell_types: Vec<String> = vec![];
     let mut i = 0u8;
+    let mut threads = vec![];
     for a in &CFG.spells {
         for entry in read_dir(format!("{}/{}", &CFG.unpack_dir, a)).unwrap() {
             let entry = entry.unwrap();
@@ -546,14 +540,28 @@ fn load_spell() -> (Vec<Stats>, Vec<String>) {
             if let Some(n) = name {
                 if let Some(n) = n.to_str() {
                     if n.starts_with("Spell_") || n.starts_with("Passive") {
-                        let file = fs::read_to_string(path).unwrap();
-                        parse_spell(&mut spell_types, &mut list, split_str(&file, "\r?\n"), 0, i);
+                        threads.push(thread::spawn(move || {
+                            parse_spell(path, i)
+                        }));
                     }
                 }
             }
         };
         i = i + 1;
     }
+
+    for t in threads {
+        let a = t.join().unwrap();
+        for i in a {
+            if let Some(&ref spell_type) = &i.data.get("SpellType") {
+                if !spell_types.contains(spell_type) {
+                    spell_types.push(spell_type.to_string());
+                }
+            }
+            list.push(i)
+        }
+    }
+
     (list, spell_types)
 }
 
@@ -653,5 +661,11 @@ mod test {
     fn hash_text() {
         let a = "hello world!";
         assert_eq!(hash(a), "1vfqu3h");
+    }
+
+    #[test]
+    fn test_n2s() {
+        let a = n2s(7000);
+        assert_eq!(a, "Ìöý");
     }
 }

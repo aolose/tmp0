@@ -1,6 +1,6 @@
 assets = "public"
 version = "Patch 7"
-unpack_dir = "C:/Downloads/test"
+unpack_dir = "D:/Program Files (x86)/GOG Galaxy/Games/bg3mmd/UnpackedData"
 english = "English/Localization/English/english.loca.xml"
 tooltips = "Shared/Public/Shared/TooltipExtras/TooltipUpcastDescriptions.lsx"
 spells = [
